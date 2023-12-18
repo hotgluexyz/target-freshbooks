@@ -29,23 +29,6 @@ def parse_line_items(record_line_items):
     return line_items
 
 
-
-class BaseSink(FreshbooksSink):
-    """ Base Sink to get accountId """
-    endpoint = "/auth/api/v1/users/me"
-    method = "GET"
-    records_jsonpath = "$.response.business_memberships[*]"
-
-
-    def get_child_context(self, record: dict, context: Optional[dict]) -> dict:
-        """Return a context dictionary for child streams."""
-        return {
-            "business_id": record["business"]["id"],
-            "accounting_systemid": record["business"]["account_id"],
-        }
-
-
-
 class InvoicesSink(FreshbooksSink):
     """Freshbooks target sink class."""
 
@@ -66,7 +49,7 @@ class InvoicesSink(FreshbooksSink):
         #Gotta get customerid before posting a record
         cust_res = json.loads((self.request_api(http_method = "GET", endpoint = f"/users/clients?search[email]={record.get('billEmail')}", headers=self.authenticator.auth_headers)).text)
         cust_res = cust_res.get("response").get("result").get("clients")[0].get("id") if len(cust_res.get("response").get("result").get("clients")) > 0 else None
-        #.get("response").get("result").get("clients").get("id")
+        
         if cust_res is None:
             raise ValueError(f"Cannot find customer with the email: {record.get('billEmail')}. Please check the provided email and try again.")
 
@@ -109,10 +92,14 @@ class InvoicesSink(FreshbooksSink):
             context: Stream partition or context dictionary.
         """
         method = "POST"
+        header = self.authenticator.auth_headers
 
-        self.logger.info(record)
+        #check if invoice exists to avoid failure:
+        invoice = self.request_api(http_method="GET", endpoint= f"{self.endpoint}/{record['invoice']['invoice_number']}", headers=header)
+        if json.loads(invoice.text):
+            method = "PUT"
         
-        res = self.request_api(http_method = method, endpoint = self.endpoint, request_data = record, headers=self.authenticator.auth_headers)
+        res = self.request_api(http_method = method, endpoint = self.endpoint, request_data = record, headers=header)
 
 class CustomersSink(FreshbooksSink):
 
@@ -152,6 +139,13 @@ class CustomersSink(FreshbooksSink):
             context: Stream partition or context dictionary.
         """
         method = "POST"
+
+        #check if client exists already
+        client = json.loads((self.request_api(http_method = "GET", endpoint = f"/users/clients?search[email]={record['client']['email']}", headers=self.authenticator.auth_headers)).text)
+        cust_res = client.get("response").get("result").get("clients")[0].get("id") if len(cust_res.get("response").get("result").get("clients")) > 0 else None
+
+        if cust_res: # update client with the new info if there is a duplicate or should we skip?
+            method = "PUT"
 
         self.logger.info(record)
         
